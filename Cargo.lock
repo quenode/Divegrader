@@ -566,7 +566,7 @@ dependencies = [
 
 [[package]]
 name = "divegrader"
-version = "0.2.0"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -588,13 +588,12 @@ dependencies = [
 
 [[package]]
 name = "divegrader-core"
-version = "0.2.0"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "image",
  "rayon",
  "serde",
- "thiserror 1.0.69",
  "toml",
 ]
 

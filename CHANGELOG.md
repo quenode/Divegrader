@@ -5,6 +5,31 @@ All notable changes to divegrader will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-11-27
+
+### Fixed
+- Match original Python algorithm: cast channel average to u8 before hue shift.
+- Use bilinear resize (cv2 default) instead of nearest in analysis.
+- Default `--max-gain` raised to 10.0 and `--white-balance` defaults to `off` to preserve original behavior.
+
+## [0.3.1] - 2026-11-27
+
+### Fixed
+- Green channel oversaturation: clamp per-channel histogram gain (default 2.0).
+- Conservative grey-world pre-pass (higher dominance threshold, capped scale).
+- Added `--max-gain` and `--green-scale` knobs for manual tuning.
+
+## [0.3.0] - 2026-11-27
+
+### Added
+- Grey-world white-balance pre-pass (`--white-balance auto|off`).
+- Dehaze pass (`--dehaze 0.0-1.0`) to reduce underwater haze.
+- Median keyframe mode (`--keyframes interpolate|median`) for robust video grading.
+- New grading options exposed in help: `--water`, `--depth`, `--profile`.
+- Gain clamping (`--max-gain`, default 2.0) to prevent green oversaturation.
+- `--green-scale` for manual green channel attenuation.
+- Conservative grey-world pre-pass (threshold raised to 1.5x dominance).
+
 ## [0.2.0] - 2026-11-26
 
 ### Added
@@ -25,7 +50,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Interactive TUI (`--tui`) with progress bars, per-file status, logs, and
   live system stats (CPU, RAM, GPU, drivers) in the Catppuccin Mocha palette.
 - `--silent` flag to disable all UI output for scripts/CI.
-- `--gpu`, `--hw`, `--codec`, `--crf`, `--preset`, `--no-audio` video options.
+- `--dehaze <0.0-1.0>`: boost saturation in hazy mid/shadow regions.
+- `--white-balance auto|off`: grey-world white-balance pre-pass.
+- `--keyframes interpolate|median`: median keyframe mode (robust to transient objects).
 - `--strength`, `--min-avg-red`, `--max-hue-shift`, `--blue-magic`,
   `--threshold-ratio`, `--grade-preset` grading options.
 - TOML config files: `--config` and `--save-config`.

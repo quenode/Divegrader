@@ -1,8 +1,8 @@
 use crossterm::{
+    cursor::Show,
     event::{self, Event, KeyCode},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-    cursor::Show,
 };
 use ratatui::{
     backend::CrosstermBackend,
@@ -33,11 +33,11 @@ pub struct SystemStats {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub enum ProgressEvent {
     FileStart(String),
     FileDone(String, bool),
     VideoProgress(String, f64),
-    Log(String),
 }
 
 pub fn spawn_stats(stats: Arc<Mutex<SystemStats>>) {
@@ -80,19 +80,18 @@ pub fn spawn_stats(stats: Arc<Mutex<SystemStats>>) {
                         .unwrap_or_default();
                     (name, util, used, total, temp, drv)
                 } else {
-                    (
-                        String::from("N/A"),
-                        0,
-                        0,
-                        0,
-                        0,
-                        String::from("N/A"),
-                    )
+                    (String::from("N/A"), 0, 0, 0, 0, String::from("N/A"))
                 };
 
             #[cfg(not(feature = "nvidia"))]
-            let (gpu_name, gpu_util, gpu_mem_used, gpu_mem_total, gpu_temp, gpu_driver) =
-                (String::from("N/A"), 0, 0u64, 0u64, 0u32, String::from("N/A"));
+            let (gpu_name, gpu_util, gpu_mem_used, gpu_mem_total, gpu_temp, gpu_driver) = (
+                String::from("N/A"),
+                0,
+                0u64,
+                0u64,
+                0u32,
+                String::from("N/A"),
+            );
 
             let mut s = stats.lock().unwrap();
             s.cpu_usage = cpu;
@@ -176,12 +175,6 @@ pub fn run_tui(
                     }
                 }
                 ProgressEvent::VideoProgress(_, p) => current_pct = p,
-                ProgressEvent::Log(m) => {
-                    logs.push(m);
-                    if logs.len() > 12 {
-                        logs.remove(0);
-                    }
-                }
             }
         }
 
@@ -234,13 +227,19 @@ pub fn run_tui(
 
                 // shadow + title
                 let spin = spinner[(frame_now as usize) % spinner.len()];
-                let title = Paragraph::new(format!("{} divegrader  {} / {} files  {:.1}s", spin, done, total, start.elapsed().as_secs_f64()))
-                    .style(Style::default().fg(Color::Rgb(0x89, 0xb4, 0xfa)))
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_style(Style::default().fg(Color::Rgb(0xcb, 0xa6, 0xf7))),
-                    );
+                let title = Paragraph::new(format!(
+                    "{} divegrader  {} / {} files  {:.1}s",
+                    spin,
+                    done,
+                    total,
+                    start.elapsed().as_secs_f64()
+                ))
+                .style(Style::default().fg(Color::Rgb(0x89, 0xb4, 0xfa)))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::Rgb(0xcb, 0xa6, 0xf7))),
+                );
                 f.render_widget(title, left[0]);
 
                 // overall gauge
@@ -259,7 +258,7 @@ pub fn run_tui(
                                 total,
                                 start.elapsed().as_secs_f64()
                             ))
-                            .border_style(Style::default().fg(Color::Rgb(0x89,0xb4,0xfa))),
+                            .border_style(Style::default().fg(Color::Rgb(0x89, 0xb4, 0xfa))),
                     )
                     .gauge_style(Style::default().fg(grad_color(overall_ratio, frame_now)))
                     .ratio(overall_ratio);
@@ -271,7 +270,7 @@ pub fn run_tui(
                         Block::default()
                             .borders(Borders::ALL)
                             .title(format!("Current: {}", current))
-                            .border_style(Style::default().fg(Color::Rgb(0xf9,0xe2,0xaf))),
+                            .border_style(Style::default().fg(Color::Rgb(0xf9, 0xe2, 0xaf))),
                     )
                     .gauge_style(Style::default().fg(grad_color(current_pct, frame_now)))
                     .ratio(current_pct.clamp(0.0, 1.0));
@@ -283,7 +282,7 @@ pub fn run_tui(
                     Block::default()
                         .borders(Borders::ALL)
                         .title("Log")
-                        .border_style(Style::default().fg(Color::Rgb(0xf3,0x8b,0xa8))),
+                        .border_style(Style::default().fg(Color::Rgb(0xf3, 0x8b, 0xa8))),
                 );
                 f.render_widget(logw, left[3]);
 
@@ -298,7 +297,7 @@ pub fn run_tui(
                     Block::default()
                         .borders(Borders::ALL)
                         .title("CPU / Memory")
-                        .border_style(Style::default().fg(Color::Rgb(0x89,0xb4,0xfa))),
+                        .border_style(Style::default().fg(Color::Rgb(0x89, 0xb4, 0xfa))),
                 );
                 f.render_widget(cpuw, cpu_row[0]);
 
@@ -316,20 +315,23 @@ pub fn run_tui(
                     Block::default()
                         .borders(Borders::ALL)
                         .title("Graphics")
-                        .border_style(Style::default().fg(Color::Rgb(0xa6,0xe3,0xa1))),
+                        .border_style(Style::default().fg(Color::Rgb(0xa6, 0xe3, 0xa1))),
                 );
                 f.render_widget(gpuw, gpu_row[0]);
 
                 // software
                 let sw_text = format!(
                     "OS: {}\nHost: {}\nffmpeg: {}\ndivegrader: {}",
-                    s.os_name, s.hostname, s.ffmpeg_version, env!("CARGO_PKG_VERSION")
+                    s.os_name,
+                    s.hostname,
+                    s.ffmpeg_version,
+                    env!("CARGO_PKG_VERSION")
                 );
                 let sww = Paragraph::new(sw_text).block(
                     Block::default()
                         .borders(Borders::ALL)
                         .title("Software")
-                        .border_style(Style::default().fg(Color::Rgb(0xf9,0xe2,0xaf))),
+                        .border_style(Style::default().fg(Color::Rgb(0xf9, 0xe2, 0xaf))),
                 );
                 f.render_widget(sww, right[2]);
 
@@ -338,7 +340,11 @@ pub fn run_tui(
                 let filled = ((s.cpu_usage / 100.0) * levels as f32).round() as usize;
                 let mut fire_lines: Vec<Line> = Vec::new();
                 for level in (0..levels).rev() {
-                    let ch = if level < filled { "███" } else { "░░░" };
+                    let ch = if level < filled {
+                        "███"
+                    } else {
+                        "░░░"
+                    };
                     let color = match level {
                         5 => Color::Rgb(0xf3, 0x8b, 0xa8),
                         4 => Color::Rgb(0xf9, 0xe2, 0xaf),
@@ -354,14 +360,18 @@ pub fn run_tui(
                     Block::default()
                         .borders(Borders::ALL)
                         .title("CPU load")
-                        .border_style(Style::default().fg(Color::Rgb(0xf3,0x8b,0xa8))),
+                        .border_style(Style::default().fg(Color::Rgb(0xf3, 0x8b, 0xa8))),
                 );
                 f.render_widget(fire, cpu_row[1]);
                 // gpu load vertical bar
                 let gpu_filled = ((s.gpu_util as f32 / 100.0) * 6.0).round() as usize;
                 let mut gpu_lines: Vec<Line> = Vec::new();
                 for level in (0..6).rev() {
-                    let ch = if level < gpu_filled { "███" } else { "░░░" };
+                    let ch = if level < gpu_filled {
+                        "███"
+                    } else {
+                        "░░░"
+                    };
                     let color = match level {
                         5 => Color::Rgb(0xf3, 0x8b, 0xa8),
                         4 => Color::Rgb(0xf9, 0xe2, 0xaf),
