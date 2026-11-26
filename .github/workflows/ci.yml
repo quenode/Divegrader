@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install FFmpeg (Ubuntu)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Install FFmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+      - name: Install FFmpeg (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg -y
+      - name: Format check
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --workspace -- -D warnings
+      - name: Tests
+        run: cargo test --workspace --lib
+      - name: Build (release)
+        run: cargo build --release --workspace
+
+  artifacts:
+    name: Build artifacts (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build (release)
+        run: cargo build --release -p divegrader
+      - name: Package (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: |
+          tar czf divegrader-${{ matrix.os }}.tar.gz -C target/release divegrader
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          7z a divegrader-${{ matrix.os }}.zip target/release/divegrader.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: divegrader-${{ matrix.os }}
+          path: |
+            divegrader-*.tar.gz
+            divegrader-*.zip

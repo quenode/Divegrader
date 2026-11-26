@@ -1,0 +1,31 @@
+[package]
+name = "divegrader"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "divegrader"
+path = "src/main.rs"
+
+[dependencies]
+divegrader-core = { path = "../divegrader-core" }
+anyhow.workspace = true
+clap.workspace = true
+image.workspace = true
+indicatif.workspace = true
+rayon.workspace = true
+serde_json.workspace = true
+img-parts = "0.4"
+ratatui = "0.29"
+crossterm = "0.28"
+sysinfo = "0.33"
+nvml-wrapper = { version = "0.10", optional = true }
+wgpu = "30"
+pollster = "0.4"
+bytemuck = { version = "1", features = ["derive"] }
+crossbeam-channel = "0.5"
+
+[features]
+default = ["nvidia"]
+nvidia = ["dep:nvml-wrapper"]
