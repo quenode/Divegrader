@@ -2,7 +2,11 @@ use clap::Parser;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(name = "divegrader", version, about = "Underwater photo/video color correction")]
+#[command(
+    name = "divegrader",
+    version,
+    about = "Underwater photo/video color correction"
+)]
 pub struct Cli {
     #[arg(required = true)]
     pub inputs: Vec<PathBuf>,
@@ -67,8 +71,26 @@ pub struct Cli {
     #[arg(long, default_value = "default")]
     pub grade_preset: String,
 
+    #[arg(long, default_value_t = 10.0)]
+    pub max_gain: f32,
+
+    #[arg(long, default_value_t = 1.0)]
+    pub green_scale: f32,
+
+    #[arg(long, default_value_t = 1.0)]
+    pub green_gain_cap: f32,
+
     #[arg(long, default_value = "auto")]
     pub water: String,
+
+    #[arg(long, default_value = "off")]
+    pub white_balance: String,
+
+    #[arg(long, default_value_t = 0.0)]
+    pub dehaze: f32,
+
+    #[arg(long, default_value = "interpolate")]
+    pub keyframes: String,
 
     #[arg(long, default_value = "auto")]
     pub depth: String,

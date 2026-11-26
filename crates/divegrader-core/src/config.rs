@@ -17,6 +17,12 @@ pub struct GradeConfig {
     pub water: String,
     pub depth: String,
     pub profile: String,
+    pub max_gain: f32,
+    pub green_scale: f32,
+    pub green_gain_cap: f32,
+    pub dehaze: f32,
+    pub white_balance: String,
+    pub keyframes: String,
 }
 
 impl Default for GradeConfig {
@@ -36,6 +42,12 @@ impl Default for GradeConfig {
             water: "auto".to_string(),
             depth: "auto".to_string(),
             profile: "default".to_string(),
+            dehaze: 0.0,
+            max_gain: 10.0,
+            green_scale: 1.0,
+            green_gain_cap: 1.0,
+            white_balance: "off".to_string(),
+            keyframes: "interpolate".to_string(),
         }
     }
 }
