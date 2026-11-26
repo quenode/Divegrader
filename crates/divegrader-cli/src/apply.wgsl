@@ -1,4 +1,4 @@
-struct Cfg { width: u32, height: u32, frames: u32, strength: f32, contrast: f32, saturation: f32, gamma: f32, temperature: f32 };
+struct Cfg { width: u32, height: u32, frames: u32, strength: f32, contrast: f32, saturation: f32, gamma: f32, temperature: f32, dehaze: f32, _pad: f32 };
 
 @group(0) @binding(0) var<storage, read_write> pixels: array<u32>;
 @group(0) @binding(1) var<storage, read> mats: array<f32>;
@@ -47,6 +47,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     nr = clamp(nr, 0.0, 255.0);
     ng = clamp(ng, 0.0, 255.0);
     nb = clamp(nb, 0.0, 255.0);
+    // dehaze: boost saturation in mid/shadows
+    if (cfg.dehaze > 0.0) {
+        let gray = (nr + ng + nb) / 3.0;
+        let k = 1.0 + cfg.dehaze;
+        nr = gray + (nr - gray) * k;
+        ng = gray + (ng - gray) * k;
+        nb = gray + (nb - gray) * k;
+        nr = clamp(nr, 0.0, 255.0);
+        ng = clamp(ng, 0.0, 255.0);
+        nb = clamp(nb, 0.0, 255.0);
+    }
     let rr = u32(nr);
     let gg = u32(ng);
     let bb = u32(nb);

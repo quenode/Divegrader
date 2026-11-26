@@ -25,7 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Interactive TUI (`--tui`) with progress bars, per-file status, logs, and
   live system stats (CPU, RAM, GPU, drivers) in the Catppuccin Mocha palette.
 - `--silent` flag to disable all UI output for scripts/CI.
-- `--gpu`, `--hw`, `--codec`, `--crf`, `--preset`, `--no-audio` video options.
+- `--dehaze <0.0-1.0>`: boost saturation in hazy mid/shadow regions.
+- `--white-balance auto|off`: grey-world white-balance pre-pass.
+- `--keyframes interpolate|median`: median keyframe mode (robust to transient objects).
 - `--strength`, `--min-avg-red`, `--max-hue-shift`, `--blue-magic`,
   `--threshold-ratio`, `--grade-preset` grading options.
 - TOML config files: `--config` and `--save-config`.

@@ -6,13 +6,13 @@ mod util;
 mod video;
 
 use anyhow::Result;
-use cli::Cli;
 use clap::Parser;
+use cli::Cli;
 use divegrader_core::GradeConfig;
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use rayon::prelude::*;
+use std::path::PathBuf;
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 
 fn main() {
     if let Err(e) = run() {
@@ -23,24 +23,32 @@ fn main() {
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
-    let mut cfg = if let Some(cfg_path) = &cli.config {
+    let cfg = if let Some(cfg_path) = &cli.config {
         let s = std::fs::read_to_string(cfg_path)?;
         let mut c = GradeConfig::from_toml(&s)?;
         c.profile = cli.profile.clone();
+        c.dehaze = cli.dehaze;
+        c.white_balance = cli.white_balance.clone();
+        c.keyframes = cli.keyframes.clone();
         c.apply_profile();
         c
     } else {
-        let mut c = GradeConfig::default();
-        c.min_avg_red = cli.min_avg_red;
-        c.max_hue_shift = cli.max_hue_shift;
-        c.blue_magic = cli.blue_magic;
-        c.sample_seconds = cli.sample_seconds;
-        c.threshold_ratio = cli.threshold_ratio;
-        c.strength = cli.strength;
-        c.preset = cli.grade_preset.clone();
-        c.water = cli.water.clone();
-        c.depth = cli.depth.clone();
-        c.profile = cli.profile.clone();
+        let mut c = GradeConfig {
+            min_avg_red: cli.min_avg_red,
+            max_hue_shift: cli.max_hue_shift,
+            blue_magic: cli.blue_magic,
+            sample_seconds: cli.sample_seconds,
+            threshold_ratio: cli.threshold_ratio,
+            strength: cli.strength,
+            preset: cli.grade_preset.clone(),
+            water: cli.water.clone(),
+            depth: cli.depth.clone(),
+            profile: cli.profile.clone(),
+            dehaze: cli.dehaze,
+            white_balance: cli.white_balance.clone(),
+            keyframes: cli.keyframes.clone(),
+            ..Default::default()
+        };
         c.apply_preset();
         c.apply_profile();
         c
@@ -77,7 +85,10 @@ fn run() -> Result<()> {
     };
 
     let jobs = if cli.jobs == 0 { num_cpus() } else { cli.jobs };
-    rayon::ThreadPoolBuilder::new().num_threads(jobs).build_global().ok();
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(jobs)
+        .build_global()
+        .ok();
 
     let errors = std::sync::atomic::AtomicUsize::new(0);
     let quiet = cli.quiet || cli.silent;
@@ -86,19 +97,35 @@ fn run() -> Result<()> {
             return;
         }
         let out = util::output_path(input, cli.output.as_deref(), &cli.suffix);
-        let name = input.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let name = input
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         let _ = tx.send(tui::ProgressEvent::FileStart(name.clone()));
         let res = if image_proc::is_image(input) {
             image_proc::process_image(input, &out, &cfg, cli.quality, cli.overwrite, cli.gpu)
         } else {
-            video::process_video(input, &out, &cfg, &cli, Some(tx.clone()), &name, cancel.clone())
+            video::process_video(
+                input,
+                &out,
+                &cfg,
+                &cli,
+                Some(tx.clone()),
+                &name,
+                cancel.clone(),
+            )
         };
         match res {
-            Ok(_) => { let _ = tx.send(tui::ProgressEvent::FileDone(name.clone(), true)); }
+            Ok(_) => {
+                let _ = tx.send(tui::ProgressEvent::FileDone(name.clone(), true));
+            }
             Err(e) => {
                 errors.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let _ = tx.send(tui::ProgressEvent::FileDone(name.clone(), false));
-                if !quiet { eprintln!("{}: {:#}", input.display(), e); }
+                if !quiet {
+                    eprintln!("{}: {:#}", input.display(), e);
+                }
             }
         }
         if !use_tui && !quiet {
@@ -113,14 +140,19 @@ fn run() -> Result<()> {
 
     let e = errors.load(std::sync::atomic::Ordering::SeqCst);
     if !quiet {
-        if e > 0 { println!("Completed with {} errors.", e); }
-        else { println!("All done."); }
+        if e > 0 {
+            println!("Completed with {} errors.", e);
+        } else {
+            println!("All done.");
+        }
     }
     Ok(())
 }
 
 fn num_cpus() -> usize {
-    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
 }
 
 fn atty_stdout() -> bool {

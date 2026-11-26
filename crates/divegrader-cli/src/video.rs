@@ -1,22 +1,45 @@
 use anyhow::{Context, Result};
-use divegrader_core::{apply_filter, get_filter_matrix_from_rgb, interpolate_matrices, GradeConfig, Matrix};
+use divegrader_core::{
+    apply_filter, get_filter_matrix_from_rgb, interpolate_matrices, GradeConfig, Matrix,
+};
 use std::io::{Read, Write};
-use std::process::{Command, Stdio};
 use std::path::Path;
+use std::process::{Command, Stdio};
 
 pub fn is_video(p: &Path) -> bool {
     matches!(
-        p.extension().and_then(|e| e.to_str()).map(|s| s.to_lowercase()).as_deref(),
+        p.extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_lowercase())
+            .as_deref(),
         Some("mp4") | Some("mkv") | Some("mov") | Some("avi") | Some("webm")
     )
 }
 
-struct Probe { width: u32, height: u32, fps: f64, has_audio: bool }
+struct Probe {
+    width: u32,
+    height: u32,
+    fps: f64,
+    has_audio: bool,
+}
 
 fn probe(input: &str) -> Result<Probe> {
     let out = Command::new("ffprobe")
-        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height,r_frame_rate", "-show_entries", "stream=codec_name", "-of", "json", input])
-        .output().context("ffprobe")?;
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height,r_frame_rate",
+            "-show_entries",
+            "stream=codec_name",
+            "-of",
+            "json",
+            input,
+        ])
+        .output()
+        .context("ffprobe")?;
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).context("parse ffprobe")?;
     let s = &v["streams"][0];
     let w = s["width"].as_u64().context("width")? as u32;
@@ -25,27 +48,54 @@ fn probe(input: &str) -> Result<Probe> {
     let fps = parse_rate(fr);
     // audio check
     let aout = Command::new("ffprobe")
-        .args(["-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0", input])
-        .output().context("ffprobe audio")?;
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "a",
+            "-show_entries",
+            "stream=index",
+            "-of",
+            "csv=p=0",
+            input,
+        ])
+        .output()
+        .context("ffprobe audio")?;
     let has_audio = !aout.stdout.is_empty();
-    Ok(Probe { width: w, height: h, fps, has_audio })
+    Ok(Probe {
+        width: w,
+        height: h,
+        fps,
+        has_audio,
+    })
 }
 
-fn parse_rate(s: &str) -> f64 {    let parts: Vec<&str> = s.split('/').collect();
+fn parse_rate(s: &str) -> f64 {
+    let parts: Vec<&str> = s.split('/').collect();
     if parts.len() == 2 {
         let a: f64 = parts[0].parse().unwrap_or(30.0);
         let b: f64 = parts[1].parse().unwrap_or(1.0);
-        if b != 0.0 { a / b } else { a }
+        if b != 0.0 {
+            a / b
+        } else {
+            a
+        }
     } else {
         s.parse().unwrap_or(30.0)
     }
 }
 
 fn use_nvenc(hw: &str) -> bool {
-    if hw == "cpu" { return false; }
-    if hw == "nvenc" { return true; }
+    if hw == "cpu" {
+        return false;
+    }
+    if hw == "nvenc" {
+        return true;
+    }
     // auto: check ffmpeg for nvenc
-    Command::new("ffmpeg").args(["-hide_banner", "-encoders"]).output()
+    Command::new("ffmpeg")
+        .args(["-hide_banner", "-encoders"])
+        .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).contains("hevc_nvenc"))
         .unwrap_or(false)
 }
@@ -61,21 +111,42 @@ fn decoder(input: &str, hw: &str) -> Result<std::process::Child> {
     cmd.spawn().context("spawn ffmpeg decoder")
 }
 
-pub fn process_video(input: &Path, output: &Path, cfg: &GradeConfig, cli: &crate::cli::Cli, progress: Option<std::sync::mpsc::Sender<crate::tui::ProgressEvent>>, name: &str, cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Result<()> {
+pub fn process_video(
+    input: &Path,
+    output: &Path,
+    cfg: &GradeConfig,
+    cli: &crate::cli::Cli,
+    progress: Option<std::sync::mpsc::Sender<crate::tui::ProgressEvent>>,
+    name: &str,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<()> {
     let input_s = input.to_string_lossy().to_string();
     let t0 = std::time::Instant::now();
     let probe = probe(&input_s)?;
     let w = probe.width;
     let h = probe.height;
     let fps = probe.fps;
-    let frame_bytes = (w as usize) * (h as usize) * 3;
 
     // stabilization analysis pass (vidstabdetect)
     let trf_path = if cli.stabilize {
         let p = std::env::temp_dir().join(format!("divegrader_{}.trf", std::process::id()));
-        let vf = format!("scale=640:360,vidstabdetect=shakiness=5:accuracy=15:result={}", p.display());
+        let vf = format!(
+            "scale=640:360,vidstabdetect=shakiness=5:accuracy=15:result={}",
+            p.display()
+        );
         let status = Command::new("ffmpeg")
-            .args(["-hide_banner", "-loglevel", "error", "-i", &input_s, "-vf", &vf, "-f", "null", "-"])
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                &input_s,
+                "-vf",
+                &vf,
+                "-f",
+                "null",
+                "-",
+            ])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
@@ -91,13 +162,41 @@ pub fn process_video(input: &Path, output: &Path, cfg: &GradeConfig, cli: &crate
     // Pass 1 (sampling only; decode scaled down for speed)
     let mut child = if cli.hw != "cpu" {
         Command::new("ffmpeg")
-            .args(["-hide_banner", "-loglevel", "error", "-hwaccel", "cuda", "-i", &input_s, "-vf", "scale=256:256", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-hwaccel",
+                "cuda",
+                "-i",
+                &input_s,
+                "-vf",
+                "scale=256:256",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "rgb24",
+                "-",
+            ])
             .stdout(Stdio::piped())
             .spawn()
             .context("spawn ffmpeg pass1 decoder")?
     } else {
         Command::new("ffmpeg")
-            .args(["-hide_banner", "-loglevel", "error", "-i", &input_s, "-vf", "scale=256:256", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                &input_s,
+                "-vf",
+                "scale=256:256",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "rgb24",
+                "-",
+            ])
             .stdout(Stdio::piped())
             .spawn()
             .context("spawn ffmpeg pass1 decoder")?
@@ -114,12 +213,14 @@ pub fn process_video(input: &Path, output: &Path, cfg: &GradeConfig, cli: &crate
             let _ = child.kill();
             return Ok(());
         }
-        if stdout.read_exact(&mut buf).is_err() { break; }
+        if stdout.read_exact(&mut buf).is_err() {
+            break;
+        }
         let scene_change = match &last_sampled {
             Some(prev) => mean_abs_diff(prev, &buf) > 30.0,
             None => true,
         };
-        if frame_count % interval == 0 || scene_change {
+        if frame_count.is_multiple_of(interval) || scene_change {
             let m = get_filter_matrix_from_rgb(256, 256, &buf, cfg);
             samples.push((frame_count, m));
             last_sampled = Some(buf.clone());
@@ -135,8 +236,29 @@ pub fn process_video(input: &Path, output: &Path, cfg: &GradeConfig, cli: &crate
     }
 
     let samples = smooth_samples(samples);
-    let matrices = interpolate_matrices(&samples, frame_count);
-    if std::env::var("DG_TIMING").is_ok() { eprintln!("pass1 done: {} frames, {} samples, {:?}", frame_count, samples.len(), t0.elapsed()); }
+    let matrices = if cfg.keyframes == "median" {
+        let mut m = [0.0f32; 20];
+        for k in 0..20 {
+            let mut vals: Vec<f32> = samples.iter().map(|(_, mm)| mm[k]).collect();
+            vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            m[k] = if vals.is_empty() {
+                0.0
+            } else {
+                vals[vals.len() / 2]
+            };
+        }
+        vec![m; frame_count]
+    } else {
+        interpolate_matrices(&samples, frame_count)
+    };
+    if std::env::var("DG_TIMING").is_ok() {
+        eprintln!(
+            "pass1 done: {} frames, {} samples, {:?}",
+            frame_count,
+            samples.len(),
+            t0.elapsed()
+        );
+    }
     let t_after_pass1 = std::time::Instant::now();
 
     // Pass 2
@@ -160,19 +282,32 @@ pub fn process_video(input: &Path, output: &Path, cfg: &GradeConfig, cli: &crate
 
     let mut enc_args: Vec<String> = vec![
         "-y".into(),
-        "-hide_banner".into(), "-loglevel".into(), "error".into(),
-        "-f".into(), "rawvideo".into(), "-pix_fmt".into(), "rgb24".into(),
-        "-s".into(), format!("{}x{}", w, h),
-        "-r".into(), format!("{:.6}", fps),
-        "-i".into(), "-".into(),
-        "-i".into(), input_s.clone(),
+        "-hide_banner".into(),
+        "-loglevel".into(),
+        "error".into(),
+        "-f".into(),
+        "rawvideo".into(),
+        "-pix_fmt".into(),
+        "rgb24".into(),
+        "-s".into(),
+        format!("{}x{}", w, h),
+        "-r".into(),
+        format!("{:.6}", fps),
+        "-i".into(),
+        "-".into(),
+        "-i".into(),
+        input_s.clone(),
     ];
     if cli.stabilize {
         if let Some(trf) = &trf_path {
             enc_args.extend([
                 "-filter_complex".into(),
-                format!("[0:v]vidstabtransform=input={}:zoom=5:smoothing=15[vo]", trf.display()),
-                "-map".into(), "[vo]".into(),
+                format!(
+                    "[0:v]vidstabtransform=input={}:zoom=5:smoothing=15[vo]",
+                    trf.display()
+                ),
+                "-map".into(),
+                "[vo]".into(),
             ]);
         } else {
             enc_args.extend(["-map".into(), "0:v:0".into()]);
@@ -183,23 +318,26 @@ pub fn process_video(input: &Path, output: &Path, cfg: &GradeConfig, cli: &crate
     if !cli.no_audio && probe.has_audio {
         enc_args.extend(["-map".into(), "1:a?".into()]);
     }
-    enc_args.extend([
-        "-c:v".into(), codec_ffmpeg.into(),
-    ]);
+    enc_args.extend(["-c:v".into(), codec_ffmpeg.into()]);
     if nvenc {
-        enc_args.extend(["-rc".into(), "vbr".into(), "-cq".into(), cli.crf.to_string()]);
+        enc_args.extend([
+            "-rc".into(),
+            "vbr".into(),
+            "-cq".into(),
+            cli.crf.to_string(),
+        ]);
     } else {
         enc_args.extend(["-crf".into(), cli.crf.to_string()]);
     }
-    enc_args.extend([
-        "-preset".into(), cli.preset.clone(),
-    ]);
+    enc_args.extend(["-preset".into(), cli.preset.clone()]);
     if !cli.no_audio && probe.has_audio {
         enc_args.extend(["-c:a".into(), "copy".into()]);
     }
     enc_args.extend([
-        "-map_metadata".into(), "1".into(),
-        "-movflags".into(), "+faststart".into(),
+        "-map_metadata".into(),
+        "1".into(),
+        "-movflags".into(),
+        "+faststart".into(),
         output.to_string_lossy().to_string(),
     ]);
 
@@ -228,16 +366,31 @@ pub fn process_video(input: &Path, output: &Path, cfg: &GradeConfig, cli: &crate
         worker_handles.push(std::thread::spawn(move || {
             while let Ok(item) = rx.recv() {
                 let (idx, mut frame): (usize, Vec<u8>) = item;
-                if cancel2.load(std::sync::atomic::Ordering::SeqCst) { break; }
-                let m = if idx < mats.len() { &mats[idx] } else { mats.last().unwrap() };
+                if cancel2.load(std::sync::atomic::Ordering::SeqCst) {
+                    break;
+                }
+                let m = if idx < mats.len() {
+                    &mats[idx]
+                } else {
+                    mats.last().unwrap()
+                };
                 if gpu {
-                    if !crate::gpu::apply_filter_gpu(&mut frame, ww, hh, m, cfg2.strength) {
-                        apply_filter(&mut frame, ww, m, cfg2.strength);
+                    if !crate::gpu::apply_filter_gpu(
+                        &mut frame,
+                        ww,
+                        hh,
+                        m,
+                        cfg2.strength,
+                        cfg2.dehaze,
+                    ) {
+                        apply_filter(&mut frame, ww, m, cfg2.strength, cfg2.dehaze);
                     }
                 } else {
-                    apply_filter(&mut frame, ww, m, cfg2.strength);
+                    apply_filter(&mut frame, ww, m, cfg2.strength, cfg2.dehaze);
                 }
-                if tx.send((idx, frame)).is_err() { break; }
+                if tx.send((idx, frame)).is_err() {
+                    break;
+                }
             }
         }));
     }
@@ -248,10 +401,17 @@ pub fn process_video(input: &Path, output: &Path, cfg: &GradeConfig, cli: &crate
     let dec_handle = std::thread::spawn(move || {
         let mut idx = 0usize;
         loop {
-            if cancel_dec.load(std::sync::atomic::Ordering::SeqCst) { let _ = dec.kill(); break; }
+            if cancel_dec.load(std::sync::atomic::Ordering::SeqCst) {
+                let _ = dec.kill();
+                break;
+            }
             let mut fbuf = vec![0u8; frame_bytes];
-            if dec_out.read_exact(&mut fbuf).is_err() { break; }
-            if tx_raw.send((idx, fbuf)).is_err() { break; }
+            if dec_out.read_exact(&mut fbuf).is_err() {
+                break;
+            }
+            if tx_raw.send((idx, fbuf)).is_err() {
+                break;
+            }
             idx += 1;
         }
         let _ = dec.wait();
@@ -261,27 +421,44 @@ pub fn process_video(input: &Path, output: &Path, cfg: &GradeConfig, cli: &crate
     while let Ok((_idx, frame)) = rx_done.recv() {
         if cancel.load(std::sync::atomic::Ordering::SeqCst) {
             let _ = enc.kill();
-            for h in worker_handles { let _ = h.join(); }
+            for h in worker_handles {
+                let _ = h.join();
+            }
             let _ = dec_handle.join();
             return Ok(());
         }
         enc_in.write_all(&frame).context("write frame")?;
         written += 1;
-        if written % 30 == 0 {
-            if std::env::var("DG_TIMING").is_ok() { eprintln!("frame {} at {:?}", written, t_after_pass1.elapsed()); }
+        if written.is_multiple_of(30) {
+            if std::env::var("DG_TIMING").is_ok() {
+                eprintln!("frame {} at {:?}", written, t_after_pass1.elapsed());
+            }
             if let Some(tx) = &progress {
                 let pct = written as f64 / frame_count.max(1) as f64;
-                let _ = tx.send(crate::tui::ProgressEvent::VideoProgress(name.to_string(), pct));
+                let _ = tx.send(crate::tui::ProgressEvent::VideoProgress(
+                    name.to_string(),
+                    pct,
+                ));
             }
         }
     }
-    if std::env::var("DG_TIMING").is_ok() { eprintln!("pass2 loop done: {} frames, {:?}", written, t_after_pass1.elapsed()); }
+    if std::env::var("DG_TIMING").is_ok() {
+        eprintln!(
+            "pass2 loop done: {} frames, {:?}",
+            written,
+            t_after_pass1.elapsed()
+        );
+    }
     drop(enc_in);
-    for h in worker_handles { let _ = h.join(); }
+    for h in worker_handles {
+        let _ = h.join();
+    }
     let _ = dec_handle.join();
     let t_enc = std::time::Instant::now();
     let status = enc.wait().context("encoder wait")?;
-    if std::env::var("DG_TIMING").is_ok() { eprintln!("enc wait: {:?}", t_enc.elapsed()); }
+    if std::env::var("DG_TIMING").is_ok() {
+        eprintln!("enc wait: {:?}", t_enc.elapsed());
+    }
     if !status.success() {
         anyhow::bail!("ffmpeg encoder failed");
     }
@@ -300,7 +477,9 @@ fn mean_abs_diff(a: &[u8], b: &[u8]) -> f32 {
 }
 
 fn smooth_samples(samples: Vec<(usize, Matrix)>) -> Vec<(usize, Matrix)> {
-    if samples.len() < 3 { return samples; }
+    if samples.len() < 3 {
+        return samples;
+    }
     let mut out = Vec::with_capacity(samples.len());
     for i in 0..samples.len() {
         let lo = i.saturating_sub(1);
@@ -308,8 +487,8 @@ fn smooth_samples(samples: Vec<(usize, Matrix)>) -> Vec<(usize, Matrix)> {
         let mut m = [0.0f32; 20];
         for k in 0..20 {
             let mut sum = 0.0f32;
-            for j in lo..=hi {
-                sum += samples[j].1[k];
+            for sample in &samples[lo..=hi] {
+                sum += sample.1[k];
             }
             m[k] = sum / (hi - lo + 1) as f32;
         }

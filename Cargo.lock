@@ -594,7 +594,6 @@ dependencies = [
  "image",
  "rayon",
  "serde",
- "thiserror 1.0.69",
  "toml",
 ]
 

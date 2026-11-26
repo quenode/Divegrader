@@ -2,7 +2,11 @@ use clap::Parser;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(name = "divegrader", version, about = "Underwater photo/video color correction")]
+#[command(
+    name = "divegrader",
+    version,
+    about = "Underwater photo/video color correction"
+)]
 pub struct Cli {
     #[arg(required = true)]
     pub inputs: Vec<PathBuf>,
@@ -69,6 +73,15 @@ pub struct Cli {
 
     #[arg(long, default_value = "auto")]
     pub water: String,
+
+    #[arg(long, default_value = "auto")]
+    pub white_balance: String,
+
+    #[arg(long, default_value_t = 0.0)]
+    pub dehaze: f32,
+
+    #[arg(long, default_value = "interpolate")]
+    pub keyframes: String,
 
     #[arg(long, default_value = "auto")]
     pub depth: String,

@@ -18,12 +18,50 @@ pub fn get_filter_matrix(img: &RgbImage, cfg: &GradeConfig) -> Matrix {
     let small = image::imageops::resize(img, 256, 256, image::imageops::FilterType::Nearest);
     let (w, h) = small.dimensions();
 
+    // grey-world white balance pre-pass
+    let work = if cfg.white_balance != "off" {
+        let mut mr = 0.0f32;
+        let mut mg = 0.0f32;
+        let mut mb = 0.0f32;
+        for p in small.pixels() {
+            mr += p[0] as f32;
+            mg += p[1] as f32;
+            mb += p[2] as f32;
+        }
+        let n = (w * h) as f32;
+        let (mr, mg, mb) = (mr / n, mg / n, mb / n);
+        let avg = (mr + mg + mb) / 3.0;
+        let apply = if cfg.white_balance == "auto" {
+            mr.max(mg).max(mb) > 1.3 * mr.min(mg).min(mb).max(1.0)
+        } else {
+            true
+        };
+        if apply {
+            let mut out = RgbImage::new(w, h);
+            for y in 0..h {
+                for x in 0..w {
+                    let p = small.get_pixel(x, y);
+                    let r = (p[0] as f32 * (avg / mr.max(1.0))).clamp(0.0, 255.0) as u8;
+                    let g = (p[1] as f32 * (avg / mg.max(1.0))).clamp(0.0, 255.0) as u8;
+                    let b = (p[2] as f32 * (avg / mb.max(1.0))).clamp(0.0, 255.0) as u8;
+                    out.put_pixel(x, y, Rgb([r, g, b]));
+                }
+            }
+            out
+        } else {
+            small
+        }
+    } else {
+        small
+    };
+    let (w, h) = work.dimensions();
+
     // average rgb
     let mut sum_r = 0.0f32;
     let mut sum_g = 0.0f32;
     let mut sum_b = 0.0f32;
     let n = (w * h) as f32;
-    for p in small.pixels() {
+    for p in work.pixels() {
         sum_r += p[0] as f32;
         sum_g += p[1] as f32;
         sum_b += p[2] as f32;
@@ -35,14 +73,27 @@ pub fn get_filter_matrix(img: &RgbImage, cfg: &GradeConfig) -> Matrix {
     let deficit = 1.0 - avg[0] / maxgb;
     let water_green = avg[1] >= avg[2];
     let min_avg_red = if cfg.depth == "auto" {
-        if deficit > 0.6 { 75.0 }
-        else if deficit > 0.35 { 65.0 }
-        else if deficit > 0.15 { 55.0 }
-        else { 50.0 }
-    } else { cfg.min_avg_red };
+        if deficit > 0.6 {
+            75.0
+        } else if deficit > 0.35 {
+            65.0
+        } else if deficit > 0.15 {
+            55.0
+        } else {
+            50.0
+        }
+    } else {
+        cfg.min_avg_red
+    };
     let blue_magic = if cfg.water == "auto" {
-        if water_green { 1.05 } else { 1.25 }
-    } else { cfg.blue_magic };
+        if water_green {
+            1.05
+        } else {
+            1.25
+        }
+    } else {
+        cfg.blue_magic
+    };
 
     // find hue shift
     let mut hue_shift = 0.0f32;
@@ -59,7 +110,7 @@ pub fn get_filter_matrix(img: &RgbImage, cfg: &GradeConfig) -> Matrix {
     let mut red_replaced: Vec<f32> = Vec::with_capacity((w * h) as usize);
     let mut g_vals: Vec<f32> = Vec::with_capacity((w * h) as usize);
     let mut b_vals: Vec<f32> = Vec::with_capacity((w * h) as usize);
-    for p in small.pixels() {
+    for p in work.pixels() {
         let (r, g, b) = hue_shift_pixel(p[0] as f32, p[1] as f32, p[2] as f32, hue_shift);
         let new_r = r + g + b;
         red_replaced.push(new_r.clamp(0.0, 255.0));
@@ -71,9 +122,15 @@ pub fn get_filter_matrix(img: &RgbImage, cfg: &GradeConfig) -> Matrix {
     let mut hist_r = [0u32; 256];
     let mut hist_g = [0u32; 256];
     let mut hist_b = [0u32; 256];
-    for &v in &red_replaced { hist_r[v as usize] += 1; }
-    for &v in &g_vals { hist_g[v as usize] += 1; }
-    for &v in &b_vals { hist_b[v as usize] += 1; }
+    for &v in &red_replaced {
+        hist_r[v as usize] += 1;
+    }
+    for &v in &g_vals {
+        hist_g[v as usize] += 1;
+    }
+    for &v in &b_vals {
+        hist_b[v as usize] += 1;
+    }
 
     let threshold_level = (w * h) as f32 / cfg.threshold_ratio;
 
@@ -81,9 +138,15 @@ pub fn get_filter_matrix(img: &RgbImage, cfg: &GradeConfig) -> Matrix {
     let mut norm_g = vec![0.0f32; 256];
     let mut norm_b = vec![0.0f32; 256];
     for x in 0..256usize {
-        if hist_r[x] as f32 <= threshold_level { norm_r[x] = x as f32; }
-        if hist_g[x] as f32 <= threshold_level { norm_g[x] = x as f32; }
-        if hist_b[x] as f32 <= threshold_level { norm_b[x] = x as f32; }
+        if hist_r[x] as f32 <= threshold_level {
+            norm_r[x] = x as f32;
+        }
+        if hist_g[x] as f32 <= threshold_level {
+            norm_g[x] = x as f32;
+        }
+        if hist_b[x] as f32 <= threshold_level {
+            norm_b[x] = x as f32;
+        }
     }
     norm_r[255] = 255.0;
     norm_g[255] = 255.0;
@@ -136,42 +199,73 @@ pub fn get_filter_matrix(img: &RgbImage, cfg: &GradeConfig) -> Matrix {
     m
 }
 
-pub fn apply_filter(pixels: &mut [u8], width: usize, matrix: &Matrix, strength: f32) {
+pub fn apply_filter(pixels: &mut [u8], width: usize, matrix: &Matrix, strength: f32, dehaze: f32) {
     let row = width * 3;
-    if row == 0 { return; }
-    let orig: Vec<u8> = if strength < 1.0 { pixels.to_vec() } else { Vec::new() };
-    let (m0, m1, m2, m4, m6, m9, m12, m14) =
-        (matrix[0], matrix[1], matrix[2], matrix[4] * 255.0, matrix[6], matrix[9] * 255.0, matrix[12], matrix[14] * 255.0);
-    pixels.par_chunks_mut(row).enumerate().for_each(|(row_i, chunk)| {
-        let len = chunk.len();
-        let mut i = 0usize;
-        while i + 2 < len {
-            let r = chunk[i] as f32;
-            let g = chunk[i + 1] as f32;
-            let b = chunk[i + 2] as f32;
-            let nr = r * m0 + g * m1 + b * m2 + m4;
-            let ng = g * m6 + m9;
-            let nb = b * m12 + m14;
-            let mut fr = nr.clamp(0.0, 255.0);
-            let mut fg = ng.clamp(0.0, 255.0);
-            let mut fb = nb.clamp(0.0, 255.0);
-            if strength < 1.0 {
-                let o = &orig[row_i * row + i..];
-                fr = fr * strength + o[0] as f32 * (1.0 - strength);
-                fg = fg * strength + o[1] as f32 * (1.0 - strength);
-                fb = fb * strength + o[2] as f32 * (1.0 - strength);
+    if row == 0 {
+        return;
+    }
+    let orig: Vec<u8> = if strength < 1.0 {
+        pixels.to_vec()
+    } else {
+        Vec::new()
+    };
+    let (m0, m1, m2, m4, m6, m9, m12, m14) = (
+        matrix[0],
+        matrix[1],
+        matrix[2],
+        matrix[4] * 255.0,
+        matrix[6],
+        matrix[9] * 255.0,
+        matrix[12],
+        matrix[14] * 255.0,
+    );
+    pixels
+        .par_chunks_mut(row)
+        .enumerate()
+        .for_each(|(row_i, chunk)| {
+            let len = chunk.len();
+            let mut i = 0usize;
+            while i + 2 < len {
+                let r = chunk[i] as f32;
+                let g = chunk[i + 1] as f32;
+                let b = chunk[i + 2] as f32;
+                let nr = r * m0 + g * m1 + b * m2 + m4;
+                let ng = g * m6 + m9;
+                let nb = b * m12 + m14;
+                let mut fr = nr.clamp(0.0, 255.0);
+                let mut fg = ng.clamp(0.0, 255.0);
+                let mut fb = nb.clamp(0.0, 255.0);
+                if strength < 1.0 {
+                    let o = &orig[row_i * row + i..];
+                    fr = fr * strength + o[0] as f32 * (1.0 - strength);
+                    fg = fg * strength + o[1] as f32 * (1.0 - strength);
+                    fb = fb * strength + o[2] as f32 * (1.0 - strength);
+                }
+                if dehaze > 0.0 {
+                    let gray = (fr + fg + fb) / 3.0;
+                    let k = 1.0 + dehaze.clamp(0.0, 1.0);
+                    fr = (gray + (fr - gray) * k).clamp(0.0, 255.0);
+                    fg = (gray + (fg - gray) * k).clamp(0.0, 255.0);
+                    fb = (gray + (fb - gray) * k).clamp(0.0, 255.0);
+                }
+                chunk[i] = fr as u8;
+                chunk[i + 1] = fg as u8;
+                chunk[i + 2] = fb as u8;
+                i += 3;
             }
-            chunk[i] = fr as u8;
-            chunk[i + 1] = fg as u8;
-            chunk[i + 2] = fb as u8;
-            i += 3;
-        }
-    });
+        });
 }
 
+#[allow(clippy::needless_range_loop)]
 pub fn interpolate_matrices(samples: &[(usize, Matrix)], frame_count: usize) -> Vec<Matrix> {
     if samples.is_empty() {
-        return vec![[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]; frame_count];
+        return vec![
+            [
+                1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 0.0
+            ];
+            frame_count
+        ];
     }
     let indices: Vec<f64> = samples.iter().map(|(i, _)| *i as f64).collect();
     let mut out = vec![[0.0f32; 20]; frame_count];
@@ -200,21 +294,27 @@ pub fn interpolate_matrices(samples: &[(usize, Matrix)], frame_count: usize) -> 
     out
 }
 
-pub fn get_filter_matrix_from_rgb(width: u32, height: u32, rgb: &[u8], cfg: &GradeConfig) -> Matrix {
-    let img = RgbImage::from_raw(width, height, rgb.to_vec()).unwrap_or_else(|| RgbImage::new(width, height));
+pub fn get_filter_matrix_from_rgb(
+    width: u32,
+    height: u32,
+    rgb: &[u8],
+    cfg: &GradeConfig,
+) -> Matrix {
+    let img = RgbImage::from_raw(width, height, rgb.to_vec())
+        .unwrap_or_else(|| RgbImage::new(width, height));
     get_filter_matrix(&img, cfg)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use image::RgbImage;
+    use image::{Rgb, RgbImage};
 
     fn small_img() -> RgbImage {
         let mut img = RgbImage::new(64, 64);
         for y in 0..64 {
             for x in 0..64 {
-                img.put_pixel(x, y, Rgb([ (x*4) as u8, (y*4) as u8, 120 ]));
+                img.put_pixel(x, y, image::Rgb([(x * 4) as u8, (y * 4) as u8, 120]));
             }
         }
         img
@@ -236,7 +336,7 @@ mod tests {
         let matrix = get_filter_matrix(&img, &cfg);
         let mut px = img.into_raw();
         let orig = px.clone();
-        apply_filter(&mut px, 64, &matrix, 0.0);
+        apply_filter(&mut px, 64, &matrix, 0.0, 0.0);
         assert_eq!(px, orig);
     }
 
@@ -246,6 +346,6 @@ mod tests {
         let img = RgbImage::new(3, 5);
         let matrix = get_filter_matrix(&img, &cfg);
         let mut px = img.into_raw();
-        apply_filter(&mut px, 3, &matrix, 1.0);
+        apply_filter(&mut px, 3, &matrix, 1.0, 0.0);
     }
 }
