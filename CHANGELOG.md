@@ -5,11 +5,46 @@ All notable changes to divegrader will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-11-27
+
+### Added
+- `--preview <seconds>` and `--seek <seconds>` for fast partial grading of long videos.
+- Error log file (`divegrader-errors.log`) written on failures.
+- TUI action-based overall progress, readable percentage labels, richer log with phases.
+- Vidstab warnings routed into the TUI log panel.
+
+### Fixed
+- Pass 1 now decodes keyframes only with progress reporting (no more frozen 0%).
+- Green oversaturation: green gain capped at 1.0, regional (top-quarter) water detection.
+- FFmpeg stderr no longer corrupts the TUI layout.
+
+## [0.5.0] - 2026-11-27
+
+### Added
+- `--preview <seconds>` and `--seek <seconds>`: grade only a short window of a video (audio dropped), e.g. `--preview 8 --seek 52` to check the end of a long clip.
+
+
+### Added
+- `--profile` expanded: `deep-blue`, `shallow`, `deep`, `green-water`, `red-boost` (scene presets).
+- Grading info panel in TUI + `-v` summary showing the effective settings (profile, min_avg_red, blue_magic, strength, dehaze, water, depth, gains).
+- Stabilization progress (`Stabilizing… %`) and verbose vidstab notices.
+
+### Changed
+- Explicit CLI flags now override `--profile` (e.g. `--profile reef --min-avg-red 100`).
+- `depth=auto` red-restoration target capped at 65 to avoid magenta overshoot.
+- Removed `--grade-preset`; use `--profile` instead.
+
 ## [0.4.0] - 2026-11-27
 
 ### Added
 - `--green-gain-cap` (default 1.0): green channel is never amplified.
 - Regional water-type detection: blue vs green water is judged from the top quarter of the frame (the water column), so green reefs no longer skew detection.
+- `--black-point auto|off`: 0.1%-percentile shadow floor (softened).
+- `--exposure auto|off`: top-1% luminosity based brightness lift.
+- `--blue-hue auto|off`: reduces green where blue dominates (water region).
+
+### Changed
+- Video analysis pass now decodes keyframes only (`-skip_frame nokey`), making pass 1 seconds instead of minutes on large files, with progress reporting during analysis.
 
 ### Fixed
 - Green oversaturation on shallow green-reef footage; reef grades toward brown and open water stays blue.

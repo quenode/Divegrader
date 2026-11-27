@@ -38,6 +38,8 @@ pub enum ProgressEvent {
     FileStart(String),
     FileDone(String, bool),
     VideoProgress(String, f64),
+    Phase(String),
+    Log(String),
 }
 
 pub fn spawn_stats(stats: Arc<Mutex<SystemStats>>) {
@@ -139,6 +141,8 @@ pub fn run_tui(
     stats: Arc<Mutex<SystemStats>>,
     total: usize,
     cancel: Arc<std::sync::atomic::AtomicBool>,
+    cfg: divegrader_core::GradeConfig,
+    actions_per_file: usize,
 ) {
     enable_raw_mode().unwrap();
     let mut stdout = io::stdout();
@@ -149,6 +153,9 @@ pub fn run_tui(
     let mut done = 0usize;
     let mut current = String::new();
     let mut current_pct = 0.0f64;
+    let mut phase = String::new();
+    let mut action_idx: usize = 0;
+    let mut action_pct: f64 = 0.0;
     let mut logs: Vec<String> = Vec::new();
     let mut frame: u64 = 0;
     let mut cpu_history: Vec<f32> = Vec::new();
@@ -161,20 +168,45 @@ pub fn run_tui(
                 ProgressEvent::FileStart(n) => {
                     current = n;
                     current_pct = 0.0;
+                    phase = String::new();
+                    action_idx = 0;
+                    action_pct = 0.0;
                 }
                 ProgressEvent::FileDone(n, ok) => {
                     done += 1;
                     let line = if ok {
-                        format!("✓ {}", n)
+                        format!("✓ {} — saved", n)
                     } else {
-                        format!("✗ {}", n)
+                        format!("✗ {} — failed", n)
                     };
                     logs.push(line);
                     if logs.len() > 12 {
                         logs.remove(0);
                     }
                 }
-                ProgressEvent::VideoProgress(_, p) => current_pct = p,
+                ProgressEvent::VideoProgress(_, p) => {
+                    current_pct = p;
+                    action_pct = p;
+                }
+                ProgressEvent::Phase(p) => {
+                    if phase != p {
+                        phase = p.clone();
+                        action_idx += 1;
+                        action_pct = 0.0;
+                        if !current.is_empty() {
+                            logs.push(format!("→ {} {}", current, p));
+                        }
+                        if logs.len() > 12 {
+                            logs.remove(0);
+                        }
+                    }
+                }
+                ProgressEvent::Log(m) => {
+                    logs.push(m);
+                    if logs.len() > 12 {
+                        logs.remove(0);
+                    }
+                }
             }
         }
 
@@ -244,36 +276,60 @@ pub fn run_tui(
 
                 // overall gauge
                 let overall_ratio = if total > 0 {
-                    ((done as f64 + current_pct) / total as f64).clamp(0.0, 1.0)
+                    let actions = actions_per_file.max(1) as f64;
+                    let action_progress =
+                        (action_idx as f64 + action_pct).min(actions) / actions;
+                    ((done as f64 + action_progress) / total as f64).clamp(0.0, 1.0)
                 } else {
                     0.0
+                };
+                let fill = grad_color(overall_ratio, frame_now);
+                let label_style = if overall_ratio > 0.5 {
+                    Style::default().fg(Color::Black).bg(fill)
+                } else {
+                    Style::default().fg(Color::White)
                 };
                 let overall = Gauge::default()
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
                             .title(format!(
-                                "Overall  {} / {}  {:.1}s",
-                                done,
+                                "Overall  {:.1} / {}  {:.1}s",
+                                done as f64 + current_pct,
                                 total,
                                 start.elapsed().as_secs_f64()
                             ))
                             .border_style(Style::default().fg(Color::Rgb(0x89, 0xb4, 0xfa))),
                     )
-                    .gauge_style(Style::default().fg(grad_color(overall_ratio, frame_now)))
+                    .gauge_style(Style::default().fg(fill))
+                    .label(Span::styled(
+                        format!("{:.0}%", overall_ratio * 100.0),
+                        label_style,
+                    ))
                     .ratio(overall_ratio);
                 f.render_widget(overall, left[1]);
 
                 // current gauge
+                let cur_pct = current_pct.clamp(0.0, 1.0);
+                let cfill = grad_color(cur_pct, frame_now);
+                let clabel_style = if cur_pct > 0.5 {
+                    Style::default().fg(Color::Black).bg(cfill)
+                } else {
+                    Style::default().fg(Color::White)
+                };
                 let cur = Gauge::default()
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
-                            .title(format!("Current: {}", current))
+                            .title(format!("Current: {} [{}]", current, phase))
                             .border_style(Style::default().fg(Color::Rgb(0xf9, 0xe2, 0xaf))),
                     )
-                    .gauge_style(Style::default().fg(grad_color(current_pct, frame_now)))
-                    .ratio(current_pct.clamp(0.0, 1.0));
+                    .gauge_style(Style::default().fg(cfill))
+                    .label(Span::styled(
+                        format!("{:.0}%", cur_pct * 100.0),
+                        clabel_style,
+                    ))
+                    .ratio(cur_pct);
                 f.render_widget(cur, left[2]);
 
                 // logs
@@ -390,6 +446,27 @@ pub fn run_tui(
                         .border_style(Style::default().fg(Color::Rgb(0xa6, 0xe3, 0xa1))),
                 );
                 f.render_widget(gpu_fire, gpu_row[1]);
+
+                // grading settings panel
+                let grad_text = format!(
+                    "profile: {}\nmin_avg_red: {:.0}  blue_magic: {:.1}\nstrength: {:.2}  dehaze: {:.2}\nwater: {}  depth: {}\nmax_gain: {:.1}  green_cap: {:.1}",
+                    cfg.profile,
+                    cfg.min_avg_red,
+                    cfg.blue_magic,
+                    cfg.strength,
+                    cfg.dehaze,
+                    cfg.water,
+                    cfg.depth,
+                    cfg.max_gain,
+                    cfg.green_gain_cap,
+                );
+                let gradw = Paragraph::new(grad_text).block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title("Grading")
+                        .border_style(Style::default().fg(Color::Rgb(0xc9, 0xa6, 0xf7))),
+                );
+                f.render_widget(gradw, right[3]);
             })
             .unwrap();
 

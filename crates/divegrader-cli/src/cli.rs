@@ -26,8 +26,8 @@ pub struct Cli {
     #[arg(long, default_value_t = 95)]
     pub quality: u8,
 
-    #[arg(long, default_value_t = 2.0)]
-    pub sample_seconds: f32,
+    #[arg(long)]
+    pub sample_seconds: Option<f32>,
 
     #[arg(long, default_value_t = 18)]
     pub crf: u8,
@@ -50,50 +50,62 @@ pub struct Cli {
     #[arg(long)]
     pub stabilize: bool,
 
+    #[arg(long)]
+    pub preview: Option<f64>,
+
+    #[arg(long)]
+    pub seek: Option<f64>,
+
     #[arg(long, default_value_t = 0)]
     pub jobs: usize,
 
-    #[arg(long, default_value_t = 1.0)]
-    pub strength: f32,
+    #[arg(long)]
+    pub strength: Option<f32>,
 
-    #[arg(long, default_value_t = 60.0)]
-    pub min_avg_red: f32,
+    #[arg(long)]
+    pub min_avg_red: Option<f32>,
 
-    #[arg(long, default_value_t = 120.0)]
-    pub max_hue_shift: f32,
+    #[arg(long)]
+    pub max_hue_shift: Option<f32>,
 
-    #[arg(long, default_value_t = 1.2)]
-    pub blue_magic: f32,
+    #[arg(long)]
+    pub blue_magic: Option<f32>,
 
-    #[arg(long, default_value_t = 2000.0)]
-    pub threshold_ratio: f32,
+    #[arg(long)]
+    pub threshold_ratio: Option<f32>,
 
-    #[arg(long, default_value = "default")]
-    pub grade_preset: String,
+    #[arg(long)]
+    pub max_gain: Option<f32>,
 
-    #[arg(long, default_value_t = 10.0)]
-    pub max_gain: f32,
+    #[arg(long)]
+    pub green_scale: Option<f32>,
 
-    #[arg(long, default_value_t = 1.0)]
-    pub green_scale: f32,
+    #[arg(long)]
+    pub green_gain_cap: Option<f32>,
 
-    #[arg(long, default_value_t = 1.0)]
-    pub green_gain_cap: f32,
+    #[arg(long)]
+    pub water: Option<String>,
 
-    #[arg(long, default_value = "auto")]
-    pub water: String,
+    #[arg(long)]
+    pub white_balance: Option<String>,
 
-    #[arg(long, default_value = "off")]
-    pub white_balance: String,
+    #[arg(long)]
+    pub black_point: Option<String>,
 
-    #[arg(long, default_value_t = 0.0)]
-    pub dehaze: f32,
+    #[arg(long)]
+    pub exposure: Option<String>,
 
-    #[arg(long, default_value = "interpolate")]
-    pub keyframes: String,
+    #[arg(long)]
+    pub blue_hue: Option<String>,
 
-    #[arg(long, default_value = "auto")]
-    pub depth: String,
+    #[arg(long)]
+    pub dehaze: Option<f32>,
+
+    #[arg(long)]
+    pub keyframes: Option<String>,
+
+    #[arg(long)]
+    pub depth: Option<String>,
 
     #[arg(long, default_value = "default")]
     pub profile: String,

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use divegrader_core::{get_filter_matrix, GradeConfig};
+use divegrader_core::GradeConfig;
 use image::{ImageFormat, RgbImage};
 use std::fs;
 use std::path::Path;
@@ -26,20 +26,21 @@ pub fn process_image(
     let img = image::open(input).context("open image")?;
     let rgb = img.to_rgb8();
     let (w, h) = rgb.dimensions();
-    let matrix = get_filter_matrix(&rgb, cfg);
+    let res = divegrader_core::analyze(&rgb, cfg);
     let mut buf = rgb.into_raw();
     let used_gpu = gpu
         && crate::gpu::apply_filter_gpu(
             &mut buf,
             w as usize,
             h as usize,
-            &matrix,
+            &res.matrix,
             cfg.strength,
             cfg.dehaze,
         );
     if !used_gpu {
-        divegrader_core::apply_filter(&mut buf, w as usize, &matrix, cfg.strength, cfg.dehaze);
+        divegrader_core::apply_filter(&mut buf, w as usize, &res.matrix, cfg.strength, cfg.dehaze);
     }
+    divegrader_core::post_process(&mut buf, w as usize, &res, cfg);
     let out_img = RgbImage::from_raw(w, h, buf).context("build image")?;
 
     // extra grading: contrast/saturation/gamma/temperature (simple)

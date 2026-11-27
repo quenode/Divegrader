@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use divegrader_core::{
-    apply_filter, get_filter_matrix_from_rgb, interpolate_matrices, GradeConfig, Matrix,
+    analyze_from_rgb, apply_filter, interpolate_matrices, post_process, GradeConfig, GradeResult,
+    Matrix,
 };
 use std::io::{Read, Write};
 use std::path::Path;
@@ -20,6 +21,7 @@ struct Probe {
     width: u32,
     height: u32,
     fps: f64,
+    duration: f64,
     has_audio: bool,
 }
 
@@ -31,9 +33,7 @@ fn probe(input: &str) -> Result<Probe> {
             "-select_streams",
             "v:0",
             "-show_entries",
-            "stream=width,height,r_frame_rate",
-            "-show_entries",
-            "stream=codec_name",
+            "stream=width,height,r_frame_rate,duration",
             "-of",
             "json",
             input,
@@ -46,6 +46,10 @@ fn probe(input: &str) -> Result<Probe> {
     let h = s["height"].as_u64().context("height")? as u32;
     let fr = s["r_frame_rate"].as_str().unwrap_or("30/1");
     let fps = parse_rate(fr);
+    let duration = s["duration"]
+        .as_str()
+        .and_then(|d| d.parse::<f64>().ok())
+        .unwrap_or(0.0);
     // audio check
     let aout = Command::new("ffprobe")
         .args([
@@ -66,6 +70,7 @@ fn probe(input: &str) -> Result<Probe> {
         width: w,
         height: h,
         fps,
+        duration,
         has_audio,
     })
 }
@@ -100,15 +105,42 @@ fn use_nvenc(hw: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn decoder(input: &str, hw: &str) -> Result<std::process::Child> {
+fn decoder(input: &str, hw: &str, seek_s: &str, eff_s: &str) -> Result<std::process::Child> {
     let mut cmd = Command::new("ffmpeg");
     cmd.args(["-hide_banner", "-loglevel", "error"]);
     if hw != "cpu" {
         cmd.args(["-hwaccel", "cuda"]);
     }
-    cmd.args(["-i", input, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
-        .stdout(Stdio::piped());
+    cmd.args([
+        "-ss", seek_s, "-i", input, "-t", eff_s, "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
+    ])
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
     cmd.spawn().context("spawn ffmpeg decoder")
+}
+
+fn spawn_stderr_logger(
+    stderr: std::process::ChildStderr,
+    progress: Option<std::sync::mpsc::Sender<crate::tui::ProgressEvent>>,
+    verbose: bool,
+) {
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        let reader = std::io::BufReader::new(stderr);
+        for line in reader.lines().map_while(Result::ok) {
+            if line.trim().is_empty() {
+                continue;
+            }
+            if let Some(tx) = &progress {
+                let _ = tx.send(crate::tui::ProgressEvent::Log(format!(
+                    "⚠ warning: {}",
+                    line
+                )));
+            } else if verbose {
+                eprintln!("ffmpeg: {}", line);
+            }
+        }
+    });
 }
 
 pub fn process_video(
@@ -127,6 +159,24 @@ pub fn process_video(
     let h = probe.height;
     let fps = probe.fps;
 
+    let seek = cli.seek.unwrap_or(0.0).max(0.0);
+    let preview = cli.preview;
+    if let Some(p) = preview {
+        if p <= 0.0 {
+            anyhow::bail!("--preview must be greater than 0");
+        }
+    }
+    if probe.duration > 0.0 && seek >= probe.duration {
+        anyhow::bail!(
+            "--seek {} is beyond video duration {:.1}s",
+            seek,
+            probe.duration
+        );
+    }
+    let effective_duration = preview.unwrap_or(probe.duration);
+    let seek_s = format!("{:.3}", seek);
+    let eff_s = format!("{:.3}", effective_duration);
+
     // stabilization analysis pass (vidstabdetect)
     let trf_path = if cli.stabilize {
         let p = std::env::temp_dir().join(format!("divegrader_{}.trf", std::process::id()));
@@ -134,13 +184,20 @@ pub fn process_video(
             "scale=640:360,vidstabdetect=shakiness=5:accuracy=15:result={}",
             p.display()
         );
-        let status = Command::new("ffmpeg")
+        let mut child = Command::new("ffmpeg")
             .args([
                 "-hide_banner",
                 "-loglevel",
                 "error",
+                "-progress",
+                "pipe:2",
+                "-nostats",
+                "-ss",
+                &seek_s,
                 "-i",
                 &input_s,
+                "-t",
+                &eff_s,
                 "-vf",
                 &vf,
                 "-f",
@@ -148,9 +205,47 @@ pub fn process_video(
                 "-",
             ])
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
+            .stderr(Stdio::piped())
+            .spawn()
             .context("vidstabdetect")?;
+        let stderr = child.stderr.take().context("vidstabdetect stderr")?;
+        let dur_ms = effective_duration * 1000.0;
+        let verbose = cli.verbose;
+        if let Some(tx) = &progress {
+            let _ = tx.send(crate::tui::ProgressEvent::Phase("Stabilizing".into()));
+        }
+        let prog: Option<std::sync::mpsc::Sender<crate::tui::ProgressEvent>> = progress.clone();
+        let name_owned = name.to_string();
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            let reader = std::io::BufReader::new(stderr);
+            for line in reader.lines().map_while(Result::ok) {
+                if line.contains("vid.stab") || line.contains("stalled") {
+                    if let Some(tx) = &prog {
+                        let _ = tx.send(crate::tui::ProgressEvent::Log(format!(
+                            "⚠ warning: {}",
+                            line
+                        )));
+                    } else if verbose {
+                        eprintln!("vidstab warning: {}", line);
+                    }
+                    continue;
+                }
+                if let Some(tx) = &prog {
+                    if let Some(v) = line.strip_prefix("out_time_ms=") {
+                        let ms: f64 = v.trim().parse().unwrap_or(0.0);
+                        if dur_ms > 0.0 {
+                            let pct = (ms / dur_ms).clamp(0.0, 1.0);
+                            let _ = tx.send(crate::tui::ProgressEvent::VideoProgress(
+                                name_owned.clone(),
+                                pct,
+                            ));
+                        }
+                    }
+                }
+            }
+        });
+        let status = child.wait().context("vidstabdetect wait")?;
         if !status.success() {
             anyhow::bail!("vidstabdetect failed");
         }
@@ -159,7 +254,7 @@ pub fn process_video(
         None
     };
 
-    // Pass 1 (sampling only; decode scaled down for speed)
+    // Pass 1 (sampling only; decode keyframes at low res for speed)
     let mut child = if cli.hw != "cpu" {
         Command::new("ffmpeg")
             .args([
@@ -168,8 +263,17 @@ pub fn process_video(
                 "error",
                 "-hwaccel",
                 "cuda",
+                "-skip_frame",
+                "nokey",
+                "-progress",
+                "pipe:2",
+                "-nostats",
+                "-ss",
+                &seek_s,
                 "-i",
                 &input_s,
+                "-t",
+                &eff_s,
                 "-vf",
                 "scale=256:256",
                 "-f",
@@ -179,6 +283,7 @@ pub fn process_video(
                 "-",
             ])
             .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
             .context("spawn ffmpeg pass1 decoder")?
     } else {
@@ -187,8 +292,17 @@ pub fn process_video(
                 "-hide_banner",
                 "-loglevel",
                 "error",
+                "-skip_frame",
+                "nokey",
+                "-progress",
+                "pipe:2",
+                "-nostats",
+                "-ss",
+                &seek_s,
                 "-i",
                 &input_s,
+                "-t",
+                &eff_s,
                 "-vf",
                 "scale=256:256",
                 "-f",
@@ -198,16 +312,36 @@ pub fn process_video(
                 "-",
             ])
             .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
             .context("spawn ffmpeg pass1 decoder")?
     };
     let mut stdout = child.stdout.take().context("decoder stdout")?;
+    let stderr = child.stderr.take().context("decoder stderr")?;
+    let progress_pct: std::sync::Arc<std::sync::Mutex<f64>> =
+        std::sync::Arc::new(std::sync::Mutex::new(0.0));
+    let prog_clone = progress_pct.clone();
+    let dur_ms = effective_duration * 1000.0;
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        let reader = std::io::BufReader::new(stderr);
+        for line in reader.lines().map_while(Result::ok) {
+            if let Some(v) = line.strip_prefix("out_time_ms=") {
+                let ms: f64 = v.trim().parse().unwrap_or(0.0);
+                if dur_ms > 0.0 {
+                    *prog_clone.lock().unwrap() = (ms / dur_ms).clamp(0.0, 1.0);
+                }
+            }
+        }
+    });
     let small_bytes = 256 * 256 * 3;
     let mut buf = vec![0u8; small_bytes];
-    let mut samples: Vec<(usize, Matrix)> = Vec::new();
-    let interval = (fps * cli.sample_seconds as f64).round().max(1.0) as usize;
-    let mut frame_count = 0usize;
+    let mut samples: Vec<GradeResult> = Vec::new();
+    let mut decoded = 0usize;
     let mut last_sampled: Option<Vec<u8>> = None;
+    if let Some(tx) = &progress {
+        let _ = tx.send(crate::tui::ProgressEvent::Phase("Analyzing".into()));
+    }
     loop {
         if cancel.load(std::sync::atomic::Ordering::SeqCst) {
             let _ = child.kill();
@@ -220,26 +354,54 @@ pub fn process_video(
             Some(prev) => mean_abs_diff(prev, &buf) > 30.0,
             None => true,
         };
-        if frame_count.is_multiple_of(interval) || scene_change {
-            let m = get_filter_matrix_from_rgb(256, 256, &buf, cfg);
-            samples.push((frame_count, m));
+        if samples.is_empty() || scene_change || samples.len() < 13 && decoded.is_multiple_of(3) {
+            let m = analyze_from_rgb(256, 256, &buf, cfg);
+            samples.push(m);
             last_sampled = Some(buf.clone());
         }
-        frame_count += 1;
+        decoded += 1;
+        if decoded.is_multiple_of(30) {
+            if let Some(tx) = &progress {
+                let pct = *progress_pct.lock().unwrap();
+                let _ = tx.send(crate::tui::ProgressEvent::VideoProgress(
+                    name.to_string(),
+                    pct,
+                ));
+            }
+        }
     }
     let _ = child.wait();
     if cancel.load(std::sync::atomic::Ordering::SeqCst) {
         return Ok(());
     }
-    if frame_count == 0 {
+    if decoded == 0 {
         anyhow::bail!("no frames decoded");
     }
+    // assign uniform frame positions to samples
+    let total_frames = if effective_duration > 0.0 {
+        (effective_duration * fps) as usize
+    } else {
+        decoded * (fps * cfg.sample_seconds as f64).round().max(1.0) as usize
+    }
+    .max(1);
+    let mut samples_idx: Vec<(usize, GradeResult)> = Vec::with_capacity(samples.len());
+    let n = samples.len();
+    for (i, m) in samples.into_iter().enumerate() {
+        let pos = if n <= 1 {
+            0
+        } else {
+            (i * (total_frames - 1)) / (n - 1)
+        };
+        samples_idx.push((pos, m));
+    }
 
-    let samples = smooth_samples(samples);
+    let matrix_samples: Vec<(usize, Matrix)> =
+        samples_idx.iter().map(|(i, r)| (*i, r.matrix)).collect();
+    let matrix_samples = smooth_samples(matrix_samples);
     let matrices = if cfg.keyframes == "median" {
         let mut m = [0.0f32; 20];
         for k in 0..20 {
-            let mut vals: Vec<f32> = samples.iter().map(|(_, mm)| mm[k]).collect();
+            let mut vals: Vec<f32> = matrix_samples.iter().map(|(_, mm)| mm[k]).collect();
             vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
             m[k] = if vals.is_empty() {
                 0.0
@@ -247,22 +409,45 @@ pub fn process_video(
                 vals[vals.len() / 2]
             };
         }
-        vec![m; frame_count]
+        vec![m; total_frames]
     } else {
-        interpolate_matrices(&samples, frame_count)
+        interpolate_matrices(&matrix_samples, total_frames)
+    };
+    // median post-processing parameters across samples
+    let post = {
+        let mut bp0: Vec<f32> = samples_idx.iter().map(|(_, r)| r.black_point[0]).collect();
+        let mut bp1: Vec<f32> = samples_idx.iter().map(|(_, r)| r.black_point[1]).collect();
+        let mut bp2: Vec<f32> = samples_idx.iter().map(|(_, r)| r.black_point[2]).collect();
+        let mut ex: Vec<f32> = samples_idx.iter().map(|(_, r)| r.exposure).collect();
+        let mut bh: Vec<f32> = samples_idx.iter().map(|(_, r)| r.blue_hue).collect();
+        bp0.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        bp1.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        bp2.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        ex.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        bh.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let mid = |v: &Vec<f32>| if v.is_empty() { 0.0 } else { v[v.len() / 2] };
+        GradeResult {
+            matrix: *matrices.last().unwrap_or(&[0.0f32; 20]),
+            black_point: [mid(&bp0), mid(&bp1), mid(&bp2)],
+            exposure: mid(&ex),
+            blue_hue: mid(&bh),
+        }
     };
     if std::env::var("DG_TIMING").is_ok() {
         eprintln!(
             "pass1 done: {} frames, {} samples, {:?}",
-            frame_count,
-            samples.len(),
+            decoded,
+            samples_idx.len(),
             t0.elapsed()
         );
     }
     let t_after_pass1 = std::time::Instant::now();
 
     // Pass 2
-    let mut dec = decoder(&input_s, &cli.hw)?;
+    let mut dec = decoder(&input_s, &cli.hw, &seek_s, &eff_s)?;
+    if let Some(stderr) = dec.stderr.take() {
+        spawn_stderr_logger(stderr, progress.clone(), cli.verbose);
+    }
     let mut dec_out = dec.stdout.take().context("decoder stdout")?;
 
     let nvenc = use_nvenc(&cli.hw);
@@ -315,8 +500,12 @@ pub fn process_video(
     } else {
         enc_args.extend(["-map".into(), "0:v:0".into()]);
     }
-    if !cli.no_audio && probe.has_audio {
+    let preview_mode = preview.is_some();
+    if !cli.no_audio && !preview_mode && probe.has_audio {
         enc_args.extend(["-map".into(), "1:a?".into()]);
+    }
+    if preview_mode {
+        enc_args.extend(["-an".into()]);
     }
     enc_args.extend(["-c:v".into(), codec_ffmpeg.into()]);
     if nvenc {
@@ -330,7 +519,7 @@ pub fn process_video(
         enc_args.extend(["-crf".into(), cli.crf.to_string()]);
     }
     enc_args.extend(["-preset".into(), cli.preset.clone()]);
-    if !cli.no_audio && probe.has_audio {
+    if !cli.no_audio && !preview_mode && probe.has_audio {
         enc_args.extend(["-c:a".into(), "copy".into()]);
     }
     enc_args.extend([
@@ -344,8 +533,12 @@ pub fn process_video(
     let mut enc = Command::new("ffmpeg")
         .args(&enc_args)
         .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .context("spawn ffmpeg encoder")?;
+    if let Some(stderr) = enc.stderr.take() {
+        spawn_stderr_logger(stderr, progress.clone(), cli.verbose);
+    }
     let mut enc_in = enc.stdin.take().context("encoder stdin")?;
 
     let frame_bytes = w as usize * h as usize * 3;
@@ -360,6 +553,7 @@ pub fn process_video(
         let ww = w as usize;
         let hh = h as usize;
         let mats = matrices.clone();
+        let post2 = post.clone();
         let cfg2 = cfg.clone();
         let gpu = cli.gpu;
         let cancel2 = cancel.clone();
@@ -388,6 +582,7 @@ pub fn process_video(
                 } else {
                     apply_filter(&mut frame, ww, m, cfg2.strength, cfg2.dehaze);
                 }
+                post_process(&mut frame, ww, &post2, &cfg2);
                 if tx.send((idx, frame)).is_err() {
                     break;
                 }
@@ -418,6 +613,9 @@ pub fn process_video(
     });
 
     let mut written = 0usize;
+    if let Some(tx) = &progress {
+        let _ = tx.send(crate::tui::ProgressEvent::Phase("Grading".into()));
+    }
     while let Ok((_idx, frame)) = rx_done.recv() {
         if cancel.load(std::sync::atomic::Ordering::SeqCst) {
             let _ = enc.kill();
@@ -434,7 +632,7 @@ pub fn process_video(
                 eprintln!("frame {} at {:?}", written, t_after_pass1.elapsed());
             }
             if let Some(tx) = &progress {
-                let pct = written as f64 / frame_count.max(1) as f64;
+                let pct = written as f64 / total_frames.max(1) as f64;
                 let _ = tx.send(crate::tui::ProgressEvent::VideoProgress(
                     name.to_string(),
                     pct,
@@ -448,6 +646,9 @@ pub fn process_video(
             written,
             t_after_pass1.elapsed()
         );
+    }
+    if let Some(tx) = &progress {
+        let _ = tx.send(crate::tui::ProgressEvent::Phase("Finishing".into()));
     }
     drop(enc_in);
     for h in worker_handles {

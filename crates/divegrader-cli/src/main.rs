@@ -23,42 +23,68 @@ fn main() {
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
-    let cfg = if let Some(cfg_path) = &cli.config {
+    let mut cfg = if let Some(cfg_path) = &cli.config {
         let s = std::fs::read_to_string(cfg_path)?;
-        let mut c = GradeConfig::from_toml(&s)?;
-        c.profile = cli.profile.clone();
-        c.dehaze = cli.dehaze;
-        c.white_balance = cli.white_balance.clone();
-        c.keyframes = cli.keyframes.clone();
-        c.max_gain = cli.max_gain;
-        c.green_scale = cli.green_scale;
-        c.green_gain_cap = cli.green_gain_cap;
-        c.apply_profile();
-        c
+        GradeConfig::from_toml(&s)?
     } else {
-        let mut c = GradeConfig {
-            min_avg_red: cli.min_avg_red,
-            max_hue_shift: cli.max_hue_shift,
-            blue_magic: cli.blue_magic,
-            sample_seconds: cli.sample_seconds,
-            threshold_ratio: cli.threshold_ratio,
-            strength: cli.strength,
-            preset: cli.grade_preset.clone(),
-            water: cli.water.clone(),
-            depth: cli.depth.clone(),
-            profile: cli.profile.clone(),
-            dehaze: cli.dehaze,
-            max_gain: cli.max_gain,
-            green_scale: cli.green_scale,
-            green_gain_cap: cli.green_gain_cap,
-            white_balance: cli.white_balance.clone(),
-            keyframes: cli.keyframes.clone(),
-            ..Default::default()
-        };
-        c.apply_preset();
-        c.apply_profile();
-        c
+        GradeConfig::default()
     };
+
+    // profile (scene presets), then explicit flags override
+    cfg.profile = cli.profile.clone();
+    cfg.apply_profile();
+
+    if let Some(v) = cli.min_avg_red {
+        cfg.min_avg_red = v;
+    }
+    if let Some(v) = cli.max_hue_shift {
+        cfg.max_hue_shift = v;
+    }
+    if let Some(v) = cli.blue_magic {
+        cfg.blue_magic = v;
+    }
+    if let Some(v) = cli.sample_seconds {
+        cfg.sample_seconds = v;
+    }
+    if let Some(v) = cli.threshold_ratio {
+        cfg.threshold_ratio = v;
+    }
+    if let Some(v) = cli.strength {
+        cfg.strength = v;
+    }
+    if let Some(v) = cli.water.clone() {
+        cfg.water = v;
+    }
+    if let Some(v) = cli.depth.clone() {
+        cfg.depth = v;
+    }
+    if let Some(v) = cli.dehaze {
+        cfg.dehaze = v;
+    }
+    if let Some(v) = cli.max_gain {
+        cfg.max_gain = v;
+    }
+    if let Some(v) = cli.green_scale {
+        cfg.green_scale = v;
+    }
+    if let Some(v) = cli.green_gain_cap {
+        cfg.green_gain_cap = v;
+    }
+    if let Some(v) = cli.white_balance.clone() {
+        cfg.white_balance = v;
+    }
+    if let Some(v) = cli.black_point.clone() {
+        cfg.black_point = v;
+    }
+    if let Some(v) = cli.exposure.clone() {
+        cfg.exposure = v;
+    }
+    if let Some(v) = cli.blue_hue.clone() {
+        cfg.blue_hue = v;
+    }
+    if let Some(v) = cli.keyframes.clone() {
+        cfg.keyframes = v;
+    }
 
     if let Some(save) = &cli.save_config {
         std::fs::write(save, cfg.to_toml()?)?;
@@ -83,8 +109,10 @@ fn run() -> Result<()> {
         let stats_clone = stats.clone();
         let total = media.len();
         let cancel_clone = cancel.clone();
+        let cfg_tui = cfg.clone();
+        let actions = if cli.stabilize { 4 } else { 3 };
         Some(std::thread::spawn(move || {
-            tui::run_tui(rx_clone, stats_clone, total, cancel_clone);
+            tui::run_tui(rx_clone, stats_clone, total, cancel_clone, cfg_tui, actions);
         }))
     } else {
         None
@@ -97,6 +125,7 @@ fn run() -> Result<()> {
         .ok();
 
     let errors = std::sync::atomic::AtomicUsize::new(0);
+    let error_log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let quiet = cli.quiet || cli.silent;
     media.par_iter().for_each(|input| {
         if cancel.load(std::sync::atomic::Ordering::SeqCst) {
@@ -109,6 +138,25 @@ fn run() -> Result<()> {
             .to_string_lossy()
             .to_string();
         let _ = tx.send(tui::ProgressEvent::FileStart(name.clone()));
+        if cli.verbose {
+            eprintln!(
+                "{}: profile={} min_avg_red={} blue_magic={} strength={} dehaze={} water={} depth={} max_gain={} green_gain_cap={} white_balance={} black_point={} exposure={} blue_hue={}",
+                input.display(),
+                cfg.profile,
+                cfg.min_avg_red,
+                cfg.blue_magic,
+                cfg.strength,
+                cfg.dehaze,
+                cfg.water,
+                cfg.depth,
+                cfg.max_gain,
+                cfg.green_gain_cap,
+                cfg.white_balance,
+                cfg.black_point,
+                cfg.exposure,
+                cfg.blue_hue,
+            );
+        }
         let res = if image_proc::is_image(input) {
             image_proc::process_image(input, &out, &cfg, cli.quality, cli.overwrite, cli.gpu)
         } else {
@@ -128,6 +176,10 @@ fn run() -> Result<()> {
             }
             Err(e) => {
                 errors.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                error_log
+                    .lock()
+                    .unwrap()
+                    .push(format!("{}: {:#}", input.display(), e));
                 let _ = tx.send(tui::ProgressEvent::FileDone(name.clone(), false));
                 if !quiet {
                     eprintln!("{}: {:#}", input.display(), e);
@@ -147,7 +199,26 @@ fn run() -> Result<()> {
     let e = errors.load(std::sync::atomic::Ordering::SeqCst);
     if !quiet {
         if e > 0 {
-            println!("Completed with {} errors.", e);
+            let log_path = match &cli.output {
+                Some(o) if o.is_dir() || o.extension().is_none() => o.join("divegrader-errors.log"),
+                Some(_) => std::path::PathBuf::from("divegrader-errors.log"),
+                None => std::path::PathBuf::from("divegrader-errors.log"),
+            };
+            let lines = error_log.lock().unwrap();
+            let mut content = format!("divegrader finished with {} error(s)\n\n", e);
+            for l in lines.iter() {
+                content.push_str(l);
+                content.push('\n');
+            }
+            if let Err(we) = std::fs::write(&log_path, content) {
+                eprintln!("could not write error log {}: {:#}", log_path.display(), we);
+            } else {
+                println!(
+                    "Finished with {} errors. Error log: {}",
+                    e,
+                    log_path.display()
+                );
+            }
         } else {
             println!("All done.");
         }

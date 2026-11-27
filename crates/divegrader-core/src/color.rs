@@ -14,7 +14,19 @@ fn hue_shift_pixel(r: f32, g: f32, b: f32, h: f32) -> (f32, f32, f32) {
     (nr, ng, nb)
 }
 
+#[derive(Clone)]
+pub struct GradeResult {
+    pub matrix: Matrix,
+    pub black_point: [f32; 3],
+    pub exposure: f32,
+    pub blue_hue: f32,
+}
+
 pub fn get_filter_matrix(img: &RgbImage, cfg: &GradeConfig) -> Matrix {
+    analyze(img, cfg).matrix
+}
+
+pub fn analyze(img: &RgbImage, cfg: &GradeConfig) -> GradeResult {
     let small = image::imageops::resize(img, 256, 256, image::imageops::FilterType::Triangle);
     let (w, h) = small.dimensions();
 
@@ -95,9 +107,9 @@ pub fn get_filter_matrix(img: &RgbImage, cfg: &GradeConfig) -> Matrix {
     let water_green = tg > tb * 1.05;
     let min_avg_red = if cfg.depth == "auto" {
         if deficit > 0.6 {
-            75.0
-        } else if deficit > 0.35 {
             65.0
+        } else if deficit > 0.35 {
+            60.0
         } else if deficit > 0.15 {
             55.0
         } else {
@@ -143,14 +155,16 @@ pub fn get_filter_matrix(img: &RgbImage, cfg: &GradeConfig) -> Matrix {
     let mut hist_r = [0u32; 256];
     let mut hist_g = [0u32; 256];
     let mut hist_b = [0u32; 256];
-    for &v in &red_replaced {
-        hist_r[v as usize] += 1;
-    }
-    for &v in &g_vals {
-        hist_g[v as usize] += 1;
-    }
-    for &v in &b_vals {
-        hist_b[v as usize] += 1;
+    let mut hist_lum = [0u32; 256];
+    for i in 0..red_replaced.len() {
+        let r = red_replaced[i] as usize;
+        let g = g_vals[i] as usize;
+        let b = b_vals[i] as usize;
+        hist_r[r] += 1;
+        hist_g[g] += 1;
+        hist_b[b] += 1;
+        let (mx, mn) = (r.max(g).max(b), r.min(g).min(b));
+        hist_lum[(mx + mn) / 2] += 1;
     }
 
     let threshold_level = (w * h) as f32 / cfg.threshold_ratio;
@@ -218,7 +232,48 @@ pub fn get_filter_matrix(img: &RgbImage, cfg: &GradeConfig) -> Matrix {
     m[12] = blue_gain;
     m[14] = blue_offset;
     m[18] = 1.0;
-    m
+
+    // black point (0.1% percentile per channel)
+    let total = (w * h) as f32;
+    fn black_point(hist: &[u32; 256], total: f32) -> f32 {
+        let mut acc = 0.0f32;
+        for (i, &c) in hist.iter().enumerate() {
+            acc += c as f32;
+            if acc / total > 0.001 {
+                return i as f32;
+            }
+        }
+        0.0
+    }
+    let bp_r = black_point(&hist_r, total);
+    let bp_g = black_point(&hist_g, total);
+    let bp_b = black_point(&hist_b, total);
+
+    // exposure from top 1% luminosity
+    let mut acc = 0.0f32;
+    let mut top_bin = 255usize;
+    for i in (0..256).rev() {
+        acc += hist_lum[i] as f32;
+        if acc / total > 0.01 {
+            top_bin = i;
+            break;
+        }
+    }
+    let exposure = (0.55 / (top_bin as f32 / 255.0).max(0.05)).clamp(1.0, 1.6);
+
+    // blue-hue step strength from the top (water) region
+    let blue_hue = if tb > tg {
+        ((tb - tg) / 255.0 * 1.5).clamp(0.0, 0.4)
+    } else {
+        0.0
+    };
+
+    GradeResult {
+        matrix: m,
+        black_point: [bp_r, bp_g, bp_b],
+        exposure,
+        blue_hue,
+    }
 }
 
 pub fn apply_filter(pixels: &mut [u8], width: usize, matrix: &Matrix, strength: f32, dehaze: f32) {
@@ -278,6 +333,49 @@ pub fn apply_filter(pixels: &mut [u8], width: usize, matrix: &Matrix, strength: 
         });
 }
 
+pub fn post_process(pixels: &mut [u8], width: usize, res: &GradeResult, cfg: &GradeConfig) {
+    let row = width * 3;
+    if row == 0 {
+        return;
+    }
+    let bp = res.black_point;
+    let use_bp = cfg.black_point != "off" && (bp[0] > 2.0 || bp[1] > 2.0 || bp[2] > 2.0);
+    let use_exp = cfg.exposure != "off" && res.exposure > 1.0;
+    let use_blue = cfg.blue_hue != "off" && res.blue_hue > 0.0;
+    if !use_bp && !use_exp && !use_blue {
+        return;
+    }
+    let scale = |v: f32, b: f32| ((v - b) * (255.0 / (255.0 - b).max(1.0))).clamp(0.0, 255.0);
+    let exp = res.exposure;
+    let blue = res.blue_hue;
+    pixels.par_chunks_mut(row).for_each(|chunk| {
+        let len = chunk.len();
+        let mut i = 0usize;
+        while i + 2 < len {
+            let mut r = chunk[i] as f32;
+            let mut g = chunk[i + 1] as f32;
+            let mut b = chunk[i + 2] as f32;
+            if use_bp {
+                r = scale(r, bp[0] * 0.5);
+                g = scale(g, bp[1] * 0.5);
+                b = scale(b, bp[2] * 0.5);
+            }
+            if use_exp {
+                r = (r * exp).clamp(0.0, 255.0);
+                g = (g * exp).clamp(0.0, 255.0);
+                b = (b * exp).clamp(0.0, 255.0);
+            }
+            if use_blue && b > g && b > r {
+                g = (g - (b - g) * blue).clamp(0.0, 255.0);
+            }
+            chunk[i] = r as u8;
+            chunk[i + 1] = g as u8;
+            chunk[i + 2] = b as u8;
+            i += 3;
+        }
+    });
+}
+
 #[allow(clippy::needless_range_loop)]
 pub fn interpolate_matrices(samples: &[(usize, Matrix)], frame_count: usize) -> Vec<Matrix> {
     if samples.is_empty() {
@@ -322,9 +420,13 @@ pub fn get_filter_matrix_from_rgb(
     rgb: &[u8],
     cfg: &GradeConfig,
 ) -> Matrix {
+    analyze_from_rgb(width, height, rgb, cfg).matrix
+}
+
+pub fn analyze_from_rgb(width: u32, height: u32, rgb: &[u8], cfg: &GradeConfig) -> GradeResult {
     let img = RgbImage::from_raw(width, height, rgb.to_vec())
         .unwrap_or_else(|| RgbImage::new(width, height));
-    get_filter_matrix(&img, cfg)
+    analyze(&img, cfg)
 }
 
 #[cfg(test)]

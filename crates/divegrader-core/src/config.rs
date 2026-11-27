@@ -23,6 +23,9 @@ pub struct GradeConfig {
     pub dehaze: f32,
     pub white_balance: String,
     pub keyframes: String,
+    pub black_point: String,
+    pub exposure: String,
+    pub blue_hue: String,
 }
 
 impl Default for GradeConfig {
@@ -48,6 +51,9 @@ impl Default for GradeConfig {
             green_gain_cap: 1.0,
             white_balance: "off".to_string(),
             keyframes: "interpolate".to_string(),
+            black_point: "auto".to_string(),
+            exposure: "auto".to_string(),
+            blue_hue: "auto".to_string(),
         }
     }
 }
@@ -95,6 +101,28 @@ impl GradeConfig {
                 self.blue_magic = 1.0;
                 self.contrast = 1.1;
                 self.saturation = 1.1;
+            }
+            "deep-blue" => {
+                self.min_avg_red = 50.0;
+                self.blue_magic = 0.9;
+                self.strength = 0.65;
+                self.saturation = 0.9;
+            }
+            "shallow" => {
+                self.min_avg_red = 50.0;
+                self.blue_magic = 1.1;
+            }
+            "deep" => {
+                self.min_avg_red = 70.0;
+                self.blue_magic = 1.3;
+            }
+            "green-water" => {
+                self.min_avg_red = 65.0;
+                self.blue_magic = 1.0;
+            }
+            "red-boost" => {
+                self.min_avg_red = 80.0;
+                self.blue_magic = 1.4;
             }
             _ => {}
         }
