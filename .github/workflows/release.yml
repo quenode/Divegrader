@@ -83,10 +83,32 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
-      - name: Create release
+      - name: Publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create ${{ github.ref_name }} artifacts/* \
-            --title "divegrader ${{ github.ref_name }}" \
-            --notes-file CHANGELOG.md
+          python3 - <<'PY'
+          import os, re
+          tag = os.environ["GITHUB_REF_NAME"]
+          version = tag.lstrip("v")
+          text = open("CHANGELOG.md", encoding="utf-8").read()
+          match = re.search(
+              rf"^## \[{re.escape(version)}\].*?(?=^## \[|\Z)",
+              text,
+              flags=re.S | re.M,
+          )
+          notes = match.group(0).strip() if match else f"## [{version}]"
+          open("release-notes.md", "w", encoding="utf-8").write(notes + "\n")
+          PY
+          if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
+            gh release edit "${{ github.ref_name }}" \
+              --title "divegrader ${{ github.ref_name }}" \
+              --notes-file release-notes.md \
+              --verify-tag
+          else
+            gh release create "${{ github.ref_name }}" \
+              --title "divegrader ${{ github.ref_name }}" \
+              --notes-file release-notes.md \
+              --verify-tag
+          fi
+          gh release upload "${{ github.ref_name }}" artifacts/* --clobber
