@@ -1,4 +1,4 @@
-# 🤿 divegrader
+# 🤿 Divegrader
 
 **divegrader** is a fast, open-source (AGPL-3.0) command-line tool written in Rust for automatic underwater photo and video color correction.
 
